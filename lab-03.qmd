@@ -1,0 +1,358 @@
+---
+title: "Lab 3: COVID-19"
+subtitle: 'Ecosystem Science and Sustainability 330'
+author:
+  - name: "Chris Drew"
+    email: "cdrew02@colostate.edu"
+format: html
+theme: journal
+execute: 
+  echo: true
+---
+
+```{r}
+library(tidyverse)
+
+library(flextable)
+library(zoo)
+```
+
+#Problem 1
+
+```{r}
+data <- read_csv('https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-counties.csv')
+head(data)
+```
+
+#Problem 2
+
+```{r}
+my.date <- as.Date("2022-02-01")
+my.state <- "Colorado"
+colorado_data <- data %>%
+  filter(state == my.state) %>%
+  arrange(county, date) %>%  # Sort by county and date
+  group_by(county) %>%  # Group by county for lag calculation
+  mutate(
+    new_cases = cases - lag(cases, default = first(cases)),  #  new cases
+    new_deaths = deaths - lag(deaths, default = first(deaths))  # new deaths
+  ) %>%
+  ungroup() 
+# Table 1: 5 counties with the most cumulative cases
+cumulative_cases_table <- colorado_data %>%
+  filter(date == my.date) %>%  
+  group_by(county) %>%
+  summarise(
+    total_cases = max(cases),  # Total cases up until the date
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(total_cases)) %>%
+  head(5)  # top 5 counties
+
+# Table 2: 5 counties with the most new cases
+new_cases_table <- colorado_data %>%
+  filter(date == my.date) %>% 
+  group_by(county) %>%
+  summarise(
+    total_new_cases = sum(new_cases, na.rm = TRUE),  
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(total_new_cases)) %>%
+  head(5)  # top 5 counties
+
+# Displaying the tables using flextable
+cumulative_cases_table_flex <- flextable(cumulative_cases_table)
+new_cases_table_flex <- flextable(new_cases_table)
+
+# View tables
+cumulative_cases_table_flex
+new_cases_table_flex
+# Total new cases and total cumulative cases for the entire state
+total_new_cases <- sum(colorado_data$new_cases, na.rm = TRUE)
+total_cumulative_cases <- max(colorado_data$cases, na.rm = TRUE)
+
+# Find safe counties (0 new cases)
+safe_counties <- colorado_data %>%
+  filter(date == my.date) %>%
+  group_by(county) %>%
+  summarise(total_new_cases = sum(new_cases, na.rm = TRUE)) %>%
+  filter(total_new_cases == 0)
+
+```
+
+#Daily COVID-19 Report for Colorado on 2022-02-01
+
+Total new cases in the state: 1412125 Total cumulative cases in the state: 190541 Number of safe counties (no new cases): 4
+
+#Question 3
+
+```{r}
+library(tidyverse)
+library(flextable)
+library(zoo)
+
+# using read_csv
+pop_url <- 'https://www2.census.gov/programs-surveys/popest/datasets/2020-2023/counties/totals/co-est2023-alldata.csv'
+population_data <- read_csv(pop_url) %>%
+  mutate(
+    FIPS = paste0(
+      str_pad(as.character(STATE), 2, pad = "0"),  # 2-digit state code
+      str_pad(as.character(COUNTY), 3, pad = "0")   # 3-digit county code
+    )
+  ) %>%
+  select(CTYNAME, FIPS, POPESTIMATE2021) %>%  # Keep key columns
+  filter(FIPS != "00000")  # Remove state-level totals
+glimpse(population_data)
+
+# Population range for Colorado counties (FIPS starts with "08")
+population_data %>%
+  filter(str_sub(FIPS, 1, 2) == "08") %>%  # Colorado state FIPS = 08
+  summarise(
+    min_pop = min(POPESTIMATE2021),
+    max_pop = max(POPESTIMATE2021)
+  )
+colorado_joined <- colorado_data %>%
+  left_join(population_data, by = c("fips" = "FIPS")) %>%
+  filter(!is.na(POPESTIMATE2021))  # Remove counties without population data
+colorado_joined <- colorado_joined %>%
+  mutate(
+    cumulative_per_100k = (cases / POPESTIMATE2021) * 100000,
+    new_cases_per_100k = (new_cases / POPESTIMATE2021) * 100000
+  )
+q3_date <- as.Date("2021-01-01")  # Date specified in Question 3
+
+# Table 1: Cumulative cases per capita
+cumulative_table <- colorado_joined %>%
+  filter(date == q3_date) %>%
+  arrange(desc(cumulative_per_100k)) %>%
+  select(county, cumulative_per_100k) %>%
+  head(5) %>%
+  flextable() %>%  # Create table first
+  set_caption("Top 5 Counties by Cumulative Cases per 100k (2021-01-01)")  # Add caption
+
+# Table 2: New cases per capita
+new_cases_table <- colorado_joined %>%
+  filter(date == q3_date) %>%
+  arrange(desc(new_cases_per_100k)) %>%
+  select(county, new_cases_per_100k) %>%
+  head(5) %>%
+  flextable() %>%  # Create table without caption argument
+  set_caption("Top 5 Counties by New Cases per 100k (2021-01-01)")  # Add caption afterward
+
+# Display tables
+cumulative_table
+new_cases_table
+
+
+```
+
+#What is the range of populations seen in Colorado counties in 2021: minimum of 741, maximum of 5811596
+
+#Question 4
+
+```{r}
+# Most recent date and calculate 14-day window
+latest_date <- max(colorado_joined$date)
+start_date <- latest_date - 13  # 14-day window (inclusive)
+last_14_days <- colorado_joined %>%
+  filter(date >= start_date & date <= latest_date)
+county_14day <- last_14_days %>%
+  group_by(county, POPESTIMATE2021) %>%
+  summarise(
+    total_new_cases = sum(new_cases, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    per_100k = (total_new_cases / POPESTIMATE2021) * 100000
+  )
+top_5_table <- county_14day %>%
+  arrange(desc(per_100k)) %>%
+  head(5) %>%
+  select(county, per_100k) %>%
+  flextable() %>%
+  set_caption("Top 5 Counties: 14-Day New Cases per 100k") %>%
+  colformat_num(col_keys = "per_100k", digits = 1)
+
+top_5_table
+watchlist_counties <- county_14day %>%
+  filter(per_100k > 100)
+
+num_watchlist <- nrow(watchlist_counties)
+# Print results
+cat("COVID-19 Watch List Status (Last 14 Days)\n")
+cat("----------------------------------------\n")
+cat("Date range:", as.character(start_date), "to", as.character(latest_date), "\n")
+cat("More than 100 new cases per 100,000 residents over the past 14 days:", num_watchlist, "\n")
+
+```
+#More than 100 new cases per 100,000 residents over the past 14 days: 53 
+
+#question 5
+```{r}
+# pop data with death stats
+pop_url <- 'https://www2.census.gov/programs-surveys/popest/datasets/2020-2023/counties/totals/co-est2023-alldata.csv'
+
+population_data <- read_csv(pop_url) %>%
+  mutate(
+    FIPS = paste0(
+      str_pad(as.character(STATE), 2, pad = "0"),
+      str_pad(as.character(COUNTY), 3, pad = "0")
+    )
+  ) %>%
+  select(CTYNAME, FIPS, POPESTIMATE2021, DEATHS2021) %>%  # Add DEATHS2021
+  filter(FIPS != "00000")
+covid_deaths_2021 <- colorado_joined %>%
+  filter(
+    date >= as.Date("2021-01-01") &
+    date <= as.Date("2021-12-31")
+  ) %>%
+  group_by(county, fips) %>%
+  summarise(
+    total_covid_deaths = sum(new_deaths, na.rm = TRUE),
+    .groups = 'drop'
+  )
+death_ratio <- covid_deaths_2021 %>%
+  left_join(
+    population_data %>% select(FIPS, DEATHS2021),
+    by = c("fips" = "FIPS")
+  ) %>%
+  mutate(
+    death_pct = (total_covid_deaths / DEATHS2021) * 100
+  ) %>%
+  filter(death_pct >= 20)  # Keep counties ≥20%
+library(ggplot2)
+
+ggplot(death_ratio, aes(x = reorder(county, -death_pct), y = death_pct)) +
+  geom_bar(stat = "identity", fill = "firebrick") +
+  labs(
+    title = "Colorado Counties with ≥20% of 2021 Deaths Attributable to COVID-19",
+    x = "County",
+    y = "Percentage of Deaths (%)",
+    caption = "Source: NYT COVID-19 Data & U.S. Census Bureau"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+#Question 6
+```{r}
+# Calculate state-level cumulative cases/new cases
+state_daily <- data %>%
+  filter(state %in% c("New York", "Colorado", "Alabama", "Ohio")) %>%
+  group_by(state, date) %>%
+  summarise(
+    total_cases = sum(cases, na.rm = TRUE),  # Cumulative cases per state
+    .groups = "drop"
+  ) %>%
+  group_by(state) %>%  # Group by state for lag calculation
+  arrange(date) %>%    # Ensure dates are ordered
+  mutate(
+    new_cases = total_cases - lag(total_cases, default = first(total_cases))  # State-level new cases
+  ) %>%
+  ungroup()
+
+# Calculate 7-day rolling average
+state_daily <- state_daily %>%
+  group_by(state) %>%
+  mutate(
+    rolling_7day = zoo::rollmean(new_cases, k = 7, fill = NA, align = "right")
+  ) %>%
+  ungroup()
+library(ggplot2)
+
+ggplot(state_daily, aes(x = date)) +
+  geom_col(aes(y = new_cases), fill = "gray80", alpha = 0.6) +
+  geom_line(aes(y = rolling_7day), color = "firebrick", linewidth = 1) +
+  facet_wrap(~state, scales = "free_y") +  # Separate y-axis per state
+  labs(
+    title = "Daily New COVID-19 Cases (Raw Counts) with 7-Day Rolling Average",
+    x = "Date",
+    y = "New Cases",
+    caption = "Source: NYT COVID-19 Data"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+state_pop <- population_data %>%
+  mutate(
+    state_fips = str_sub(FIPS, 1, 2)  # Extract state FIPS (first 2 digits)
+  ) %>%
+  group_by(state_fips) %>%
+  summarise(
+    state_pop = sum(POPESTIMATE2021, na.rm = TRUE),  # Sum county populations
+    .groups = "drop"
+  )
+
+# Map state FIPS codes
+state_fips_map <- data.frame(
+  state_fips = c("36", "08", "01", "39"),  # FIPS for NY, CO, AL, OH
+  state = c("New York", "Colorado", "Alabama", "Ohio")
+)
+
+# Join the populations with the state names
+state_pop <- state_pop %>%
+  inner_join(state_fips_map, by = "state_fips")
+# Join COVID data with state populations
+state_per_capita <- state_daily %>%
+  left_join(state_pop, by = "state") %>%
+  mutate(
+    daily_per_100k = (new_cases / state_pop) * 100000,  # Per-capita rate
+    rolling_7day_per_100k = zoo::rollmean(daily_per_100k, k = 7, fill = NA, align = "right")
+  )
+ggplot(state_per_capita, aes(x = date, y = rolling_7day_per_100k, color = state)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "7-Day Rolling Average of COVID-19 Cases per 100k Residents",
+    x = "Date",
+    y = "New Cases per 100k",
+    color = "State"
+  ) +
+  scale_color_manual(values = c("darkblue", "darkgreen", "purple", "orange")) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+```
+#Briefly describe the influence scaling by population had on the analysis? Does it make some states look better? Some worse? How so?  Scaling by population evens the playing field, making it easier to compare states regardless of size. Without it, larger states like New York might seem worse just because they have more people, but with this adjustment, we see that smaller states like Alabama had similar or even higher case rates at times. Outbreaks weren’t just about total numbers, they hit some states harder relative to their population.
+
+#Question 7
+```{r}
+library(tidyverse)
+library(sf)
+
+centroid_url <- 'https://raw.githubusercontent.com/mikejohnson51/csu-ess-330/refs/heads/main/resources/county-centroids.csv'
+county_centroids <- read_csv(centroid_url) %>%
+  mutate(fips = str_pad(fips, 5, pad = "0"))  # Ensure FIPS is 5-digit string
+covid_spatial <- data %>%
+  mutate(fips = str_pad(fips, 5, pad = "0")) %>%  # Match FIPS format
+  left_join(county_centroids, by = "fips") %>% 
+  filter(!is.na(LON))  # Remove counties without coordinates
+weighted_centers <- covid_spatial %>%
+  group_by(date) %>%
+  summarise(
+    X_coord = sum(LON * cases, na.rm = TRUE) / sum(cases, na.rm = TRUE),
+    Y_coord = sum(LAT * cases, na.rm = TRUE) / sum(cases, na.rm = TRUE),
+    total_cases = sum(cases, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(month = format(date, "%m"))  # Extract month for coloring
+ggplot() +
+  borders("state", fill = "gray90", colour = "white") +  # Base map
+  geom_point(
+    data = weighted_centers,
+    aes(x = X_coord, y = Y_coord, color = month, size = total_cases),
+    alpha = 0.7
+  ) +
+  scale_color_viridis_d(option = "plasma", name = "Month") +  # Color by month
+  scale_size_continuous(name = "Total Cases") +
+  labs(
+    title = "Weighted Mean Center of COVID-19 Cases in the USA (2020-2022)",
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  theme_minimal()
+
+
+         
+```
+#In a few sentences, describe the movement of the COVID-19 weighted mean throughout the USA and possible drivers of its movement given your knowledge of the outbreak hot spots.  The weighted center of COVID-19 cases first appeared in the eastern U.S., near early outbreak hubs. Over time it shifted south and west as cases surged in western states like colorado and Utah, then moved inland toward the Midwest during later waves like Delta and Omicron. Larger points in winter months suggest seasonal spikes probably due to indoor gatherings. Factors like urban density, vaccination rates, and variant spread probably influenced this shifting pattern.
+
+
